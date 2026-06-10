@@ -27,6 +27,12 @@ os.environ.setdefault("AWS_DEFAULT_REGION", "us-east-1")
 # Raíz del repositorio (un nivel por encima de ``tests/``).
 _RAIZ_PROYECTO = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 
+# La raíz del repositorio también se agrega al path para poder importar ``app`` (el
+# punto de entrada de CDK vive en ``app.py`` en la raíz, no dentro de un paquete).
+# Importar ``app`` no ejecuta ``main()`` porque está protegido por ``__main__``.
+if _RAIZ_PROYECTO not in sys.path:
+    sys.path.insert(0, _RAIZ_PROYECTO)
+
 # Directorios de assets de runtime. Se insertan al inicio del path para que
 # ``import transform_job`` e ``import trigger_pipeline`` resuelvan a los módulos
 # correctos.
