@@ -14,7 +14,7 @@ from __future__ import annotations
 
 import os
 
-from aws_cdk import Duration, RemovalPolicy, Stack
+from aws_cdk import CfnOutput, Duration, RemovalPolicy, Stack
 from aws_cdk import aws_athena as athena
 from aws_cdk import aws_glue as glue
 from aws_cdk import aws_iam as iam
@@ -673,3 +673,47 @@ class DataLakeStack(Stack):
         #         ),
         #     ),
         # )
+
+        # === Outputs del stack ===
+        # Al finalizar `cdk deploy`, CloudFormation muestra estos outputs con los
+        # identificadores clave que el usuario necesita para operar el data lake
+        # sin buscarlos a mano en la consola. Son EXACTAMENTE cuatro y ninguno
+        # más (Requisito 8.5): nombre del bucket, del Glue Job, del workgroup de
+        # Athena y de la base de datos del catálogo. Cada uno lleva una
+        # descripción en español, no vacía y única (Requisito 8.6). El `id` de
+        # cada `CfnOutput` se usa como clave lógica del output en el template.
+
+        # Nombre físico del Data_Lake_Bucket (Requisito 8.1). `bucket_name`
+        # resuelve al nombre real que CloudFormation asigna al bucket.
+        CfnOutput(
+            self,
+            "DataLakeBucketName",
+            value=self.data_lake_bucket.bucket_name,
+            description="Nombre del bucket S3 del data lake.",
+        )
+
+        # Nombre del Glue_Transform_Job (Requisito 8.2). Para AWS::Glue::Job,
+        # `ref` resuelve al nombre del job.
+        CfnOutput(
+            self,
+            "GlueTransformJobName",
+            value=self.transform_job.ref,
+            description="Nombre del Glue Job que transforma CSV a Parquet.",
+        )
+
+        # Nombre del Athena_Workgroup dedicado (Requisito 8.3). Es un nombre
+        # físico estable y legible para seleccionar el workgroup en Athena.
+        CfnOutput(
+            self,
+            "AthenaWorkgroupName",
+            value=self.athena_workgroup_name,
+            description="Nombre del workgroup de Athena para consultar el lake.",
+        )
+
+        # Nombre de la base de datos del Glue_Data_Catalog (Requisito 8.4).
+        CfnOutput(
+            self,
+            "DatalakeDbName",
+            value="datalake_db",
+            description="Nombre de la base de datos del Glue Data Catalog.",
+        )
