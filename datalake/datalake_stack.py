@@ -12,9 +12,13 @@ valores se resuelven en `app.py` y se inyectan vía el parámetro `env`
 
 from __future__ import annotations
 
+import os
+
 from aws_cdk import RemovalPolicy, Stack
 from aws_cdk import aws_glue as glue
+from aws_cdk import aws_iam as iam
 from aws_cdk import aws_s3 as s3
+from aws_cdk import aws_s3_assets as s3_assets
 from constructs import Construct
 
 
@@ -98,3 +102,130 @@ class DataLakeStack(Stack):
                 name="datalake_db",
             ),
         )
+
+        # === Glue_Transform_Job (Python Shell) y su rol IAM ===
+        # El job lee un CSV de la zona raw/, lo transforma a Parquet particionado
+        # por fecha y lo escribe en processed/. El script vive en glue_src/ como
+        # ASSET separado de la infraestructura (Requisito 3.1): nunca se mezcla la
+        # lógica de runtime con la definición de recursos.
+        #
+        # El job y su rol se definen juntos porque son recursos estrechamente
+        # relacionados (el job necesita el ARN del rol para asumirlo).
+
+        # --- Asset: subir el script del Glue Job a S3 ---
+        # CDK empaqueta glue_src/transform_job.py y lo sube al bucket de assets
+        # del entorno (bootstrap). El job referencia su ubicación en S3 vía la
+        # propiedad `script_location` del comando.
+        transform_job_script = s3_assets.Asset(
+            self,
+            "TransformJobScript",
+            path=os.path.join(
+                os.path.dirname(__file__), "..", "glue_src", "transform_job.py"
+            ),
+        )
+
+        # --- Glue Job Role: mínimo privilegio (Requisito 7.2, 7.3, 7.5) ---
+        # El rol que asume el Glue Job. Se crea con principal de servicio de Glue
+        # y SIN políticas administradas con comodines (la AWSGlueServiceRole usa
+        # Resource "*", por eso no se adjunta): cada permiso se concede de forma
+        # explícita con ARNs concretos.
+        self.transform_job_role = iam.Role(
+            self,
+            "TransformJobRole",
+            assumed_by=iam.ServicePrincipal("glue.amazonaws.com"),
+            description=(
+                "Rol de minimo privilegio del Glue Transform Job: lee raw/, "
+                "escribe processed/, sin acceso a curated/."
+            ),
+        )
+
+        # Lectura restringida a la zona raw/ (Requisito 7.2). ARN concreto del
+        # objeto bajo el prefijo raw/, nunca "*". No se concede escritura sobre
+        # raw/ (Requisito 7.5).
+        self.transform_job_role.add_to_policy(
+            iam.PolicyStatement(
+                sid="ReadRawObjects",
+                actions=["s3:GetObject"],
+                resources=[self.data_lake_bucket.arn_for_objects("raw/*")],
+            )
+        )
+
+        # Escritura (y borrado para la limpieza del staging atómico) restringida a
+        # la zona processed/ (Requisito 7.2, 7.5). El job escribe Parquet en
+        # processed/ventas/ y usa processed/_staging/ como zona temporal.
+        self.transform_job_role.add_to_policy(
+            iam.PolicyStatement(
+                sid="WriteProcessedObjects",
+                actions=["s3:PutObject", "s3:DeleteObject"],
+                resources=[self.data_lake_bucket.arn_for_objects("processed/*")],
+            )
+        )
+
+        # Listado del bucket acotado por condición de prefijo a raw/ y processed/.
+        # El Resource es el ARN concreto del bucket (no "*") y la condición
+        # `s3:prefix` evita listar curated/ u otras zonas.
+        self.transform_job_role.add_to_policy(
+            iam.PolicyStatement(
+                sid="ListBucketScopedToZones",
+                actions=["s3:ListBucket"],
+                resources=[self.data_lake_bucket.bucket_arn],
+                conditions={
+                    "StringLike": {"s3:prefix": ["raw/*", "processed/*"]}
+                },
+            )
+        )
+
+        # Logs de Glue en CloudWatch con ARN concreto del grupo de logs de Glue
+        # (arn:aws:logs:<region>:<account>:log-group:/aws-glue/*), nunca "*".
+        self.transform_job_role.add_to_policy(
+            iam.PolicyStatement(
+                sid="GlueCloudWatchLogs",
+                actions=[
+                    "logs:CreateLogGroup",
+                    "logs:CreateLogStream",
+                    "logs:PutLogEvents",
+                ],
+                resources=[
+                    f"arn:aws:logs:{self.region}:{self.account}:log-group:/aws-glue/*"
+                ],
+            )
+        )
+
+        # Permiso para que el job lea el script desde el bucket de assets. El
+        # helper `grant_read` acota el permiso al objeto del asset (ARN concreto
+        # del bucket de assets y del script), no a "*".
+        transform_job_script.grant_read(self.transform_job_role)
+
+        # --- CfnJob tipo Python Shell ---
+        # Se elige Python Shell (no Spark): el escenario maneja un CSV diario y
+        # pequeño; Python Shell con pandas/pyarrow es más simple, barato y legible
+        # (ver design.md). El conjunto de librerías "analytics" provee pandas y
+        # pyarrow en el entorno del job; requiere glue_version 3.0 (Python 3.9),
+        # que es la versión máxima de Python soportada por Glue Python Shell.
+        self.transform_job = glue.CfnJob(
+            self,
+            "TransformJob",
+            role=self.transform_job_role.role_arn,
+            glue_version="3.0",
+            command=glue.CfnJob.JobCommandProperty(
+                name="pythonshell",
+                python_version="3.9",
+                script_location=transform_job_script.s3_object_url,
+            ),
+            # 1 DPU es suficiente para un CSV pequeño con el set analytics.
+            max_capacity=1.0,
+            default_arguments={
+                # Habilita pandas/pyarrow en el entorno del Python Shell.
+                "--library-set": "analytics",
+            },
+            description=(
+                "Glue Python Shell job que transforma CSV de raw/ a Parquet "
+                "particionado por fecha en processed/."
+            ),
+        )
+
+        # Nombre del job para tareas posteriores (variable de entorno de la
+        # Lambda, output del stack y predicado del Glue Trigger). Al no fijar un
+        # nombre físico, se usa la referencia de CloudFormation, que para
+        # AWS::Glue::Job resuelve al nombre del job.
+        self.transform_job_name = self.transform_job.ref
