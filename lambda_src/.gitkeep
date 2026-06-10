@@ -1,0 +1,2 @@
+# Código de la Trigger_Lambda (asset separado de la infraestructura).
+# El handler `trigger_pipeline.py` se añadirá en la tarea 5.

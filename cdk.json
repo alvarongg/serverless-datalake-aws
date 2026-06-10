@@ -1,0 +1,21 @@
+{
+  "app": "python app.py",
+  "watch": {
+    "include": ["**"],
+    "exclude": [
+      "README.md",
+      "cdk*.json",
+      "requirements*.txt",
+      "tests",
+      ".venv",
+      "**/__pycache__"
+    ]
+  },
+  "context": {
+    "datalake:defaultRegion": "us-east-1",
+    "@aws-cdk/aws-iam:minimizePolicies": true,
+    "@aws-cdk/core:checkSecretUsage": true,
+    "@aws-cdk/aws-s3:serverAccessLogsUseBucketPolicy": true,
+    "@aws-cdk/core:target-partitions": ["aws", "aws-cn"]
+  }
+}

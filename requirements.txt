@@ -1,0 +1,15 @@
+# Dependencias mínimas del proyecto serverless-datalake-aws.
+# Infraestructura como código con AWS CDK v2 (Python 3.12).
+aws-cdk-lib>=2.140.0
+constructs>=10.0.0,<11.0.0
+
+# Testing: pytest + property-based testing con Hypothesis.
+pytest>=8.0.0
+hypothesis>=6.100.0
+
+# SDK de AWS usado por la Lambda orquestadora y los tests con mocks.
+boto3>=1.34.0
+
+# Transformación CSV -> Parquet del Glue Job (Python Shell).
+pandas>=2.0.0
+pyarrow>=15.0.0

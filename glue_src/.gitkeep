@@ -1,0 +1,2 @@
+# Script del Glue Job (asset separado de la infraestructura).
+# El script `transform_job.py` (CSV -> Parquet) se añadirá en la tarea 3.

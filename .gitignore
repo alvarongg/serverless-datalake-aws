@@ -1,0 +1,32 @@
+# --- Python ---
+__pycache__/
+*.py[cod]
+*$py.class
+*.egg-info/
+.eggs/
+build/
+dist/
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+.hypothesis/
+
+# Entornos virtuales
+.venv/
+venv/
+env/
+ENV/
+
+# --- AWS CDK ---
+cdk.out/
+cdk.context.json
+*.swp
+
+# --- Editores / IDE ---
+.vscode/
+.idea/
+*~
+
+# --- Sistema operativo ---
+.DS_Store
+Thumbs.db
