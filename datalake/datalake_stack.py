@@ -13,6 +13,7 @@ valores se resuelven en `app.py` y se inyectan vía el parámetro `env`
 from __future__ import annotations
 
 from aws_cdk import RemovalPolicy, Stack
+from aws_cdk import aws_glue as glue
 from aws_cdk import aws_s3 as s3
 from constructs import Construct
 
@@ -75,4 +76,25 @@ class DataLakeStack(Stack):
             # Buena práctica de seguridad adicional: rechaza cualquier petición
             # que no use TLS (deniega tráfico no cifrado en tránsito).
             enforce_ssl=True,
+        )
+
+        # === Glue_Data_Catalog: base de datos `datalake_db` ===
+        # Base de datos del catálogo de Glue donde el crawler registrará las
+        # tablas inferidas a partir de los datos Parquet de la zona processed/.
+        # Es el punto de entrada para que Athena consulte el data lake por SQL.
+        #
+        # Se usa el recurso de bajo nivel `CfnDatabase` porque ofrece control
+        # explícito sobre el nombre físico (`datalake_db`), que otras tareas
+        # (crawler, permisos de Lake Formation y outputs) necesitan referenciar
+        # de forma estable. El `catalog_id` es el ID de la cuenta (cada cuenta
+        # tiene un único Data Catalog por región). Se guarda la referencia en
+        # `self.datalake_database` para reutilizarla en tareas posteriores
+        # (Requisito 4.1).
+        self.datalake_database = glue.CfnDatabase(
+            self,
+            "DatalakeDatabase",
+            catalog_id=self.account,
+            database_input=glue.CfnDatabase.DatabaseInputProperty(
+                name="datalake_db",
+            ),
         )
