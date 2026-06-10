@@ -15,6 +15,7 @@ from __future__ import annotations
 import os
 
 from aws_cdk import Duration, RemovalPolicy, Stack
+from aws_cdk import aws_athena as athena
 from aws_cdk import aws_glue as glue
 from aws_cdk import aws_iam as iam
 from aws_cdk import aws_lambda as lambda_
@@ -518,4 +519,50 @@ class DataLakeStack(Stack):
             s3.EventType.OBJECT_CREATED,
             s3n.LambdaDestination(self.trigger_lambda),
             s3.NotificationKeyFilter(prefix="raw/", suffix=".csv"),
+        )
+
+        # === Athena_Workgroup con protección de costos ===
+        # Workgroup PROPIO y dedicado a las consultas del data lake, separado del
+        # workgroup `primary` por defecto (Requisito 5.1). Un workgroup dedicado
+        # permite aplicar protecciones de costo y una ubicación de resultados
+        # fijas a todas las consultas del proyecto, sin tocar el workgroup global.
+        #
+        # Se fija un nombre físico explícito (`datalake_workgroup`) para que el
+        # output del stack pueda resolver un nombre estable y legible, y para que
+        # los analistas seleccionen el workgroup por nombre en la consola/CLI de
+        # Athena.
+        self.athena_workgroup_name = "datalake_workgroup"
+        self.athena_workgroup = athena.CfnWorkGroup(
+            self,
+            "DatalakeWorkgroup",
+            name=self.athena_workgroup_name,
+            description=(
+                "Workgroup dedicado del data lake con limite de bytes escaneados "
+                "y ubicacion de resultados forzada."
+            ),
+            # `recursive_delete_option=True` permite que `cdk destroy` elimine el
+            # workgroup aunque conserve consultas guardadas o historial, evitando
+            # recursos huérfanos en el proyecto educativo.
+            recursive_delete_option=True,
+            work_group_configuration=athena.CfnWorkGroup.WorkGroupConfigurationProperty(
+                # `enforce_work_group_configuration=True`: la configuración del
+                # workgroup (ubicación de resultados y límite de bytes) prevalece
+                # sobre cualquier ajuste enviado por el cliente, de modo que
+                # ninguna consulta pueda anular la protección de costos
+                # (Requisito 5.2).
+                enforce_work_group_configuration=True,
+                # Límite máximo de bytes escaneados por consulta: 1 GiB
+                # (1.073.741.824 bytes). Si una consulta intenta escanear más,
+                # Athena la cancela sin resultados parciales y devuelve un error
+                # de límite superado (Requisito 5.4, 5.5).
+                bytes_scanned_cutoff_per_query=1_073_741_824,
+                result_configuration=athena.CfnWorkGroup.ResultConfigurationProperty(
+                    # Los resultados de las consultas se almacenan en el propio
+                    # Data_Lake_Bucket bajo el prefijo `athena-results/`
+                    # (Requisito 5.3).
+                    output_location=(
+                        f"s3://{self.data_lake_bucket.bucket_name}/athena-results/"
+                    ),
+                ),
+            ),
         )
