@@ -424,3 +424,58 @@ def test_propiedad_ningun_rol_iam_concede_resource_wildcard(
                 assert _es_arn_concreto(recurso), (
                     f"La sentencia '{sid}' no acota a un ARN concreto"
                 )
+
+
+# Feature: serverless-datalake-aws, Property 7: los outputs del template
+# sintetizado tienen descripción no vacía (en español) y única; el conjunto de
+# descripciones de todos los outputs no contiene duplicados.
+def test_propiedad_outputs_con_descripcion_no_vacia_y_unica(
+    template: Template,
+) -> None:
+    """Property 7 (Requisito 8.6): cada output tiene descripción no vacía y única.
+
+    Aserción universal sobre el template sintetizado (no usa generadores
+    aleatorios de Hypothesis, según design.md): se obtienen TODOS los outputs del
+    template y se exige que:
+
+    - existan exactamente cuatro outputs (Requisito 8.5) y sean exactamente
+      ``DataLakeBucketName``, ``GlueTransformJobName``, ``AthenaWorkgroupName`` y
+      ``DatalakeDbName``;
+    - cada output tenga una clave ``Description`` cuyo valor sea una cadena no
+      vacía (tras aplicar ``strip``); y
+    - el conjunto de descripciones no contenga duplicados (todas únicas).
+    """
+    outputs = template.find_outputs("*")
+
+    # Conteo y nombres exactos de los outputs (Requisito 8.5).
+    nombres_esperados = {
+        "DataLakeBucketName",
+        "GlueTransformJobName",
+        "AthenaWorkgroupName",
+        "DatalakeDbName",
+    }
+    assert set(outputs.keys()) == nombres_esperados, (
+        "Los outputs del stack deben ser exactamente "
+        f"{sorted(nombres_esperados)}, se encontraron {sorted(outputs.keys())}"
+    )
+    assert len(outputs) == 4, (
+        f"Se esperaban exactamente 4 outputs, se encontraron {len(outputs)}"
+    )
+
+    # Cada output tiene una descripción no vacía (Requisito 8.6).
+    descripciones: list[str] = []
+    for nombre, output in outputs.items():
+        assert "Description" in output, (
+            f"El output '{nombre}' no define una descripción"
+        )
+        descripcion = output["Description"]
+        assert isinstance(descripcion, str) and descripcion.strip(), (
+            f"El output '{nombre}' debe tener una descripción no vacía"
+        )
+        descripciones.append(descripcion)
+
+    # Todas las descripciones son únicas: sin duplicados (Requisito 8.6).
+    assert len(set(descripciones)) == len(descripciones), (
+        "Las descripciones de los outputs deben ser únicas (sin duplicados): "
+        f"{descripciones}"
+    )
