@@ -337,3 +337,90 @@ def test_analyst_role_sin_politica_s3_inline(template: Template) -> None:
     assert not propiedades.get("ManagedPolicyArns"), (
         "El Analyst_Role no debe adjuntar politicas administradas"
     )
+
+
+def _es_arn_concreto(recurso: object) -> bool:
+    """Indica si un valor de ``Resource`` es un ARN concreto (no ``"*"``).
+
+    Por qué: en el template sintetizado un ARN concreto casi nunca es un string
+    literal; suele ser un objeto de CloudFormation (``Fn::Join``/``Fn::GetAtt``/
+    ``Ref``) que resuelve a un ARN en tiempo de despliegue. Lo relevante para la
+    Property 6 es que el recurso esté acotado y no sea el comodín ``"*"``: tanto
+    un string distinto de ``"*"`` como cualquier estructura de intrínsecas
+    cuentan como "ARN concreto".
+    """
+    if isinstance(recurso, str):
+        return recurso != "*"
+    # Un dict (Fn::Join, Fn::GetAtt, Ref, etc.) representa un ARN resuelto en
+    # despliegue: es concreto por definición.
+    return isinstance(recurso, dict)
+
+
+# Feature: serverless-datalake-aws, Property 6: ningún rol IAM concede
+# Resource "*"; para toda sentencia de las políticas inline de los roles del
+# stack, el Resource contiene al menos un ARN concreto y nunca es "*" ni una
+# lista que contenga "*".
+def test_propiedad_ningun_rol_iam_concede_resource_wildcard(
+    template: Template,
+) -> None:
+    """Property 6 (Requisitos 7.3, 10.5): ningún ``Resource`` inline es ``"*"``.
+
+    Aserción universal sobre el template sintetizado (no usa generadores
+    aleatorios de Hypothesis, según design.md): se recorren TODAS las sentencias
+    de TODOS los ``PolicyDocument`` de los recursos ``AWS::IAM::Policy`` (las
+    políticas inline que el propio ``DataLakeStack`` adjunta a sus roles
+    TransformJobRole, CrawlerRole, TriggerLambdaRole y Analyst_Role). Para cada
+    sentencia se exige que su ``Resource``:
+
+    - exista y no esté vacío (al menos un ARN concreto), y
+    - no sea el comodín ``"*"`` ni una lista que contenga ``"*"``.
+
+    Decisión de alcance (verificada al implementar la task 5.4): los roles que
+    CDK genera para sus recursos personalizados —el de auto-borrado de objetos
+    del bucket (``CustomS3AutoDeleteObjectsCustomResourceProviderRole``) y el del
+    manejador de notificaciones (``BucketNotificationsHandler...Role``)— adjuntan
+    la política AWS-administrada ``AWSLambdaBasicExecutionRole`` vía
+    ``ManagedPolicyArns``. Esa política se referencia por ARN (no se expande
+    inline en el template) y, aunque internamente use ``Resource: "*"``, no
+    aparece como sentencia inline aquí. Por eso esta propiedad se acota a las
+    sentencias inline (``AWS::IAM::Policy``), que son exactamente las
+    autoría del proyecto; las referencias a políticas administradas por ARN de
+    los roles del framework NO son sentencias inline con ``Resource: "*"`` y, por
+    tanto, no se evalúan. Esta es la interpretación correcta de los Requisitos
+    7.3/10.5 ("los roles IAM creados por el DataLakeStack").
+    """
+    documentos = _documentos_de_politica(template)
+    assert documentos, (
+        "Se esperaba al menos un AWS::IAM::Policy con políticas inline del stack"
+    )
+
+    for documento in documentos:
+        sentencias = documento.get("Statement", [])
+        for sentencia in sentencias:
+            recurso = sentencia.get("Resource")
+            sid = sentencia.get("Sid", "<sin Sid>")
+
+            # Debe existir y no estar vacío: al menos un ARN concreto.
+            assert recurso is not None, (
+                f"La sentencia '{sid}' no define Resource (debe acotar a ARNs)"
+            )
+
+            if isinstance(recurso, list):
+                # Ninguna entrada de la lista puede ser el comodín "*".
+                assert "*" not in recurso, (
+                    f"La sentencia '{sid}' incluye Resource '*' en su lista"
+                )
+                assert len(recurso) >= 1, (
+                    f"La sentencia '{sid}' tiene una lista de Resource vacía"
+                )
+                assert all(_es_arn_concreto(r) for r in recurso), (
+                    f"La sentencia '{sid}' contiene un Resource no concreto"
+                )
+            else:
+                # Resource escalar: nunca el comodín "*".
+                assert recurso != "*", (
+                    f"La sentencia '{sid}' usa Resource '*' (prohibido)"
+                )
+                assert _es_arn_concreto(recurso), (
+                    f"La sentencia '{sid}' no acota a un ARN concreto"
+                )
