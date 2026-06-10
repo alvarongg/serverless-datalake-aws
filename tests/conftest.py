@@ -6,7 +6,8 @@ del proyecto, esos directorios no son paquetes importables (no tienen ``__init__
 Para poder importar ``transform_job`` y ``trigger_pipeline`` desde los tests, ambos
 directorios se agregan al ``sys.path`` aquí, de modo que cualquier test pueda hacer
 ``import transform_job`` o ``import trigger_pipeline`` sin manipular rutas en cada
-archivo.
+archivo. Lo mismo aplica al generador de datos de ejemplo (``sample_data/``), que
+tampoco es un paquete importable, para poder hacer ``import generate_ventas``.
 
 Además se fija una región AWS por defecto (``AWS_DEFAULT_REGION``) *antes* de que se
 importen los módulos de test. Esto es necesario porque ``lambda_src/trigger_pipeline.py``
@@ -29,7 +30,7 @@ _RAIZ_PROYECTO = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 # Directorios de assets de runtime. Se insertan al inicio del path para que
 # ``import transform_job`` e ``import trigger_pipeline`` resuelvan a los módulos
 # correctos.
-for _asset in ("glue_src", "lambda_src"):
+for _asset in ("glue_src", "lambda_src", "sample_data"):
     _ruta = os.path.join(_RAIZ_PROYECTO, _asset)
     if _ruta not in sys.path:
         sys.path.insert(0, _ruta)
