@@ -18,6 +18,7 @@ from aws_cdk import Duration, RemovalPolicy, Stack
 from aws_cdk import aws_athena as athena
 from aws_cdk import aws_glue as glue
 from aws_cdk import aws_iam as iam
+from aws_cdk import aws_lakeformation as lakeformation
 from aws_cdk import aws_lambda as lambda_
 from aws_cdk import aws_s3 as s3
 from aws_cdk import aws_s3_assets as s3_assets
@@ -566,3 +567,109 @@ class DataLakeStack(Stack):
                 ),
             ),
         )
+
+        # === Lake_Formation: location, Analyst_Role y permiso SELECT ===
+        # Lake Formation centraliza el control de acceso de grano fino sobre el
+        # catálogo de datos. En lugar de conceder permisos IAM directos sobre S3
+        # a cada consumidor, se registra el bucket como "location" y se otorgan
+        # permisos a nivel de base de datos/tabla (p. ej. SELECT) a los
+        # principales que correspondan. Esto demuestra el patrón de seguridad de
+        # un data lake gobernado por catálogo.
+        #
+        # La location, el rol de ejemplo y su permiso SELECT se definen juntos
+        # porque son recursos estrechamente relacionados: el permiso concede al
+        # rol acceso de lectura sobre las tablas catalogadas en `datalake_db`.
+
+        # --- Registro del bucket como location de Lake Formation ---
+        # `use_service_linked_role=True` registra el bucket delegando la
+        # administración de permisos en el rol vinculado al servicio de Lake
+        # Formation (modo recomendado): a partir de aquí, el acceso a los datos
+        # de este bucket se gobierna por permisos de Lake Formation y no solo por
+        # políticas IAM (Requisito 6.1).
+        self.lf_location = lakeformation.CfnResource(
+            self,
+            "DataLakeLocation",
+            resource_arn=self.data_lake_bucket.bucket_arn,
+            use_service_linked_role=True,
+        )
+
+        # Dependencia explícita respecto del bucket: garantiza que el bucket
+        # exista antes de intentar registrarlo como location (Requisito 6.5).
+        # CDK no infiere esta dependencia automáticamente porque solo se referencia
+        # el ARN (un atributo), por eso se declara a mano.
+        self.lf_location.node.add_dependency(self.data_lake_bucket)
+
+        # --- Analyst_Role: rol de ejemplo de un analista de datos ---
+        # Rol asumible por cualquier principal de la MISMA cuenta
+        # (`AccountPrincipal`). Es deliberadamente un rol SIN políticas IAM
+        # directas de lectura sobre S3: el acceso a los datos NO se concede por
+        # IAM sino exclusivamente vía Lake Formation (Requisito 6.2). Así se
+        # ilustra el control de acceso de grano fino gobernado por el catálogo.
+        self.analyst_role = iam.Role(
+            self,
+            "AnalystRole",
+            assumed_by=iam.AccountPrincipal(self.account),
+            description=(
+                "Rol de ejemplo de analista de datos. NO tiene politicas IAM de "
+                "lectura sobre S3: el acceso a los datos se controla unicamente "
+                "via Lake Formation (permiso SELECT sobre datalake_db)."
+            ),
+        )
+
+        # --- Permiso SELECT de grano fino sobre datalake_db y sus tablas ---
+        # Se concede al Analyst_Role el permiso SELECT sobre TODAS las tablas de
+        # `datalake_db` mediante `table_wildcard` (Requisito 6.3). Solo SELECT:
+        # NO se otorga INSERT, ALTER, DROP ni DELETE, de modo que el analista
+        # puede consultar pero no modificar el catálogo ni los datos.
+        self.analyst_select_permission = lakeformation.CfnPermissions(
+            self,
+            "AnalystSelectPermission",
+            permissions=["SELECT"],
+            data_lake_principal=lakeformation.CfnPermissions.DataLakePrincipalProperty(
+                data_lake_principal_identifier=self.analyst_role.role_arn,
+            ),
+            resource=lakeformation.CfnPermissions.ResourceProperty(
+                # `table_wildcard={}` aplica el permiso a todas las tablas de la
+                # base, incluidas las que el crawler cree en el futuro.
+                table_resource=lakeformation.CfnPermissions.TableResourceProperty(
+                    catalog_id=self.account,
+                    database_name="datalake_db",
+                    table_wildcard={},
+                ),
+            ),
+        )
+
+        # Dependencia explícita respecto de la base de datos: el permiso debe
+        # crearse DESPUÉS de que exista `datalake_db` en el catálogo, de lo
+        # contrario Lake Formation no encontraría el recurso al que aplicar el
+        # SELECT.
+        self.analyst_select_permission.node.add_dependency(self.datalake_database)
+
+        # --- Patrón para extender permisos a otros principales/recursos ---
+        # El siguiente bloque está COMENTADO a propósito (Requisito 6.4): no tiene
+        # efecto sobre el template sintetizado y sirve solo como documentación de
+        # cómo otorgar permisos de Lake Formation a otro rol/usuario o sobre otro
+        # recurso (otra base, una tabla concreta o columnas específicas). Para
+        # usarlo, descomentar y ajustar el principal y el recurso:
+        #
+        # otro_rol = iam.Role(
+        #     self,
+        #     "OtroConsumidorRole",
+        #     assumed_by=iam.AccountPrincipal(self.account),
+        # )
+        # lakeformation.CfnPermissions(
+        #     self,
+        #     "OtroConsumidorSelectPermission",
+        #     permissions=["SELECT"],
+        #     data_lake_principal=lakeformation.CfnPermissions.DataLakePrincipalProperty(
+        #         data_lake_principal_identifier=otro_rol.role_arn,
+        #     ),
+        #     resource=lakeformation.CfnPermissions.ResourceProperty(
+        #         # Ejemplo: permiso sobre UNA tabla concreta en lugar de todas.
+        #         table_resource=lakeformation.CfnPermissions.TableResourceProperty(
+        #             catalog_id=self.account,
+        #             database_name="datalake_db",
+        #             name="ventas",
+        #         ),
+        #     ),
+        # )
