@@ -14,11 +14,13 @@ from __future__ import annotations
 
 import os
 
-from aws_cdk import RemovalPolicy, Stack
+from aws_cdk import Duration, RemovalPolicy, Stack
 from aws_cdk import aws_glue as glue
 from aws_cdk import aws_iam as iam
+from aws_cdk import aws_lambda as lambda_
 from aws_cdk import aws_s3 as s3
 from aws_cdk import aws_s3_assets as s3_assets
+from aws_cdk import aws_s3_notifications as s3n
 from constructs import Construct
 
 
@@ -410,3 +412,110 @@ class DataLakeStack(Stack):
         # ejecución bajo demanda). Para AWS::Glue::Crawler, `ref` resuelve al
         # nombre del crawler.
         self.crawler_name = self.crawler.ref
+
+        # === Trigger_Lambda, su rol IAM y la notificación S3 ===
+        # La Lambda orquesta el pipeline: ante la creación de un CSV en raw/,
+        # inicia exactamente una ejecución del Glue Transform Job. El código de
+        # runtime vive en lambda_src/ como ASSET separado de la infraestructura
+        # (steering): nunca se mezcla la lógica de la función con la definición
+        # de recursos.
+        #
+        # La Lambda, su rol y la notificación del bucket se definen juntos porque
+        # son recursos estrechamente relacionados: el rol concede el permiso de
+        # StartJobRun sobre el job, la función asume ese rol y la notificación
+        # conecta el evento de S3 con la función.
+
+        # --- ARN concreto del Glue Transform Job (mínimo privilegio) ---
+        # Se construye el ARN exacto del job a partir de región y cuenta resueltas
+        # por `app.py` y del nombre del job (`self.transform_job.ref`, un token de
+        # CloudFormation que resuelve al nombre físico). Formato:
+        #   arn:aws:glue:<region>:<account>:job/<job-name>
+        # Este ARN es el ÚNICO recurso de la sentencia StartJobRun (Requisito 7.1,
+        # 7.4): la Lambda solo puede iniciar este job, ningún otro, y nunca "*".
+        transform_job_arn = (
+            f"arn:aws:glue:{self.region}:{self.account}:job/{self.transform_job.ref}"
+        )
+
+        # --- Lambda Execution Role: mínimo privilegio (Requisito 7.1, 7.3, 7.4) ---
+        # Se define el rol de forma EXPLÍCITA en lugar de dejar que CDK adjunte la
+        # política administrada AWSLambdaBasicExecutionRole, porque esa política
+        # concede permisos de logs con Resource "*". Aquí cada permiso se otorga
+        # con un ARN concreto, garantizando que ningún Resource sea "*"
+        # (Property 6 / Requisito 7.3).
+        self.trigger_lambda_role = iam.Role(
+            self,
+            "TriggerLambdaRole",
+            assumed_by=iam.ServicePrincipal("lambda.amazonaws.com"),
+            description=(
+                "Rol de minimo privilegio de la Trigger Lambda: StartJobRun "
+                "solo sobre el Glue Transform Job y logs de CloudWatch, sin "
+                "wildcards de recurso."
+            ),
+        )
+
+        # Permiso para iniciar ÚNICAMENTE el Glue Transform Job, identificado por
+        # su ARN exacto como único recurso de la sentencia (Requisito 7.1, 7.4).
+        self.trigger_lambda_role.add_to_policy(
+            iam.PolicyStatement(
+                sid="StartTransformJobRun",
+                actions=["glue:StartJobRun"],
+                resources=[transform_job_arn],
+            )
+        )
+
+        # Logs de CloudWatch con ARN concreto, nunca "*". Se usa el patrón de
+        # grupos de logs de Lambda (/aws/lambda/*) en lugar del nombre exacto de
+        # la función para evitar una dependencia circular (el nombre del grupo
+        # depende del nombre de la función, que a su vez necesita este rol). El
+        # ARN sigue siendo concreto: acota a los grupos de logs de Lambda de esta
+        # cuenta y región, sin abrir el permiso a cualquier recurso.
+        self.trigger_lambda_role.add_to_policy(
+            iam.PolicyStatement(
+                sid="LambdaCloudWatchLogs",
+                actions=[
+                    "logs:CreateLogGroup",
+                    "logs:CreateLogStream",
+                    "logs:PutLogEvents",
+                ],
+                resources=[
+                    f"arn:aws:logs:{self.region}:{self.account}:log-group:/aws/lambda/*:*"
+                ],
+            )
+        )
+
+        # --- Trigger_Lambda (Function) ---
+        # Runtime Python 3.12 y timeout de 60 s (Requisito 2.1). El código se toma
+        # del directorio lambda_src/ como asset; el handler es
+        # `trigger_pipeline.handler`. La variable de entorno GLUE_JOB_NAME lleva
+        # el nombre del job para que el handler lo use en `start_job_run`.
+        self.trigger_lambda = lambda_.Function(
+            self,
+            "TriggerLambda",
+            runtime=lambda_.Runtime.PYTHON_3_12,
+            timeout=Duration.seconds(60),
+            handler="trigger_pipeline.handler",
+            code=lambda_.Code.from_asset(
+                os.path.join(os.path.dirname(__file__), "..", "lambda_src")
+            ),
+            role=self.trigger_lambda_role,
+            environment={
+                # Nombre del Glue Job que la Lambda debe iniciar (Requisito 2.4).
+                "GLUE_JOB_NAME": self.transform_job.ref,
+            },
+            description=(
+                "Trigger Lambda que inicia el Glue Transform Job ante la "
+                "creacion de un CSV en raw/."
+            ),
+        )
+
+        # --- Notificación S3 -> Lambda (filtrada por raw/ y .csv) ---
+        # El bucket invoca la Lambda solo ante OBJECT_CREATED de objetos cuyo
+        # prefijo es raw/ y cuyo sufijo es .csv (Requisito 2.2, 2.3, 2.6). Este
+        # filtro es crítico para evitar loops infinitos: las escrituras del Glue
+        # Job en processed/ no coinciden con el filtro y por tanto no re-disparan
+        # la Lambda.
+        self.data_lake_bucket.add_event_notification(
+            s3.EventType.OBJECT_CREATED,
+            s3n.LambdaDestination(self.trigger_lambda),
+            s3.NotificationKeyFilter(prefix="raw/", suffix=".csv"),
+        )
