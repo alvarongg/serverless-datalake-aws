@@ -1,20 +1,35 @@
 """Configuración compartida de pytest para la suite de tests.
 
-Por qué: el script del Glue Job vive en ``glue_src/`` como asset separado de la
-infraestructura y, por convención del proyecto, ese directorio no es un paquete
-importable (no tiene ``__init__.py``). Para poder importar ``transform_job`` desde
-los tests, se agrega ``glue_src/`` al ``sys.path`` aquí, de modo que cualquier test
-pueda hacer ``import transform_job`` sin manipular rutas en cada archivo.
+Por qué: tanto el script del Glue Job (``glue_src/``) como el código de la Lambda
+(``lambda_src/``) viven como assets separados de la infraestructura y, por convención
+del proyecto, esos directorios no son paquetes importables (no tienen ``__init__.py``).
+Para poder importar ``transform_job`` y ``trigger_pipeline`` desde los tests, ambos
+directorios se agregan al ``sys.path`` aquí, de modo que cualquier test pueda hacer
+``import transform_job`` o ``import trigger_pipeline`` sin manipular rutas en cada
+archivo.
+
+Además se fija una región AWS por defecto (``AWS_DEFAULT_REGION``) *antes* de que se
+importen los módulos de test. Esto es necesario porque ``lambda_src/trigger_pipeline.py``
+crea un ``boto3.client("glue")`` en tiempo de importación; sin una región configurada,
+boto3 abortaría con ``NoRegionError`` al intentar importar el módulo en un entorno sin
+credenciales/perfil AWS (p. ej. en CI). No se realiza ninguna llamada real a AWS: solo
+se construye el cliente, por lo que una región ficticia es suficiente.
 """
 
 import os
 import sys
 
+# Región AWS por defecto para los tests. Se fija solo si el entorno no define ya una,
+# para no pisar la configuración real de quien ejecute la suite localmente.
+os.environ.setdefault("AWS_DEFAULT_REGION", "us-east-1")
+
 # Raíz del repositorio (un nivel por encima de ``tests/``).
 _RAIZ_PROYECTO = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 
-# Directorio del script del Glue Job. Se inserta al inicio del path para que
-# ``import transform_job`` resuelva al módulo correcto.
-_GLUE_SRC = os.path.join(_RAIZ_PROYECTO, "glue_src")
-if _GLUE_SRC not in sys.path:
-    sys.path.insert(0, _GLUE_SRC)
+# Directorios de assets de runtime. Se insertan al inicio del path para que
+# ``import transform_job`` e ``import trigger_pipeline`` resuelvan a los módulos
+# correctos.
+for _asset in ("glue_src", "lambda_src"):
+    _ruta = os.path.join(_RAIZ_PROYECTO, _asset)
+    if _ruta not in sys.path:
+        sys.path.insert(0, _ruta)
